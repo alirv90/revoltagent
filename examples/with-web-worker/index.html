@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoltAgent in a Web Worker</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+      textarea { width: 100%; min-height: 6rem; font: inherit; padding: 0.5rem; }
+      button { padding: 0.5rem 1rem; font: inherit; }
+      pre { background: #f4f4f4; padding: 1rem; white-space: pre-wrap; min-height: 4rem; }
+      .row { margin-bottom: 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>VoltAgent in a Web Worker</h1>
+    <p>The agent + workflow run in a Web Worker, with Supabase memory over <code>fetch</code>.</p>
+    <form id="prompt-form">
+      <div class="row">
+        <textarea id="prompt" placeholder="Type something to summarize..."></textarea>
+      </div>
+      <div class="row">
+        <button type="submit">Run workflow in worker</button>
+        <span id="status" style="margin-left: 0.5rem;">idle</span>
+      </div>
+    </form>
+    <h2>Output</h2>
+    <pre id="output"></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
