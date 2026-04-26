@@ -5,13 +5,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "build:lib": "tsc --noEmit && vite build --config vite.lib.config.ts && node -e \"require('node:fs').copyFileSync('voltagent.d.ts','dist/voltagent.d.ts')\"",
+    "dev": "node scripts/check-lib-built.mjs && vite",
+    "build": "node scripts/check-lib-built.mjs && tsc --noEmit && vite build",
+    "build:lib": "tsc --noEmit && vite build --config vite.lib.config.ts && node scripts/postbuild-lib.mjs",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.0",

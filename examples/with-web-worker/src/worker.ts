@@ -1,13 +1,20 @@
-// MUST be the first import: sets globalThis.EdgeRuntime so @voltagent/core's
-// isServerlessRuntime() picks the serverless observability path.
-import "./worker-shims/bootstrap";
-
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { Agent, Memory, createWorkflowChain } from "@voltagent/core";
-import { SupabaseMemoryAdapter } from "@voltagent/supabase";
-import { z } from "zod";
-
-import { consoleLogger } from "./worker-shims/console-logger";
+// Demo worker. All VoltAgent code now lives in the prebuilt lib bundle
+// (`public/voltagent.mjs`, produced by `pnpm build:lib`). This file is just
+// the message-handler glue. Vite externalizes the `/voltagent.mjs` import so
+// the bundle is loaded at runtime, not re-bundled.
+//
+// `globalThis.EdgeRuntime = "WebWorker"` is set by the lib's bootstrap, which
+// runs as the bundle's first side effect on import. Types come from the
+// ambient declaration in `voltagent-module.d.ts`.
+import {
+  Agent,
+  Memory,
+  SupabaseMemoryAdapter,
+  consoleLogger,
+  createAnthropic,
+  createWorkflowChain,
+  z,
+} from "/voltagent.mjs";
 
 type WorkerRequest = {
   prompt: string;

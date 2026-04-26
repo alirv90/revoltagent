@@ -2,14 +2,15 @@
 
 Run a VoltAgent **workflow** with an `andAgent` step and **Supabase memory** entirely inside a browser **Web Worker** — without forking `@voltagent/core`.
 
-The trick is bundler aliases that swap a handful of Node-only modules for worker-safe shims, plus a runtime hint that routes core through its serverless observability path.
+The runtime trick is a separate **library build** (`pnpm build:lib`) that prebundles VoltAgent with worker-safe shims and a serverless-runtime hint into a single `voltagent.mjs` file. The demo's worker imports that file directly via the runtime URL `/voltagent.mjs`; Vite leaves the import alone, so there is no second pass of bundling for VoltAgent inside the demo.
 
 ## What's in here
 
 ```
 src/
   main.ts                       # host page; spawns the worker
-  worker.ts                     # Agent + workflow + Supabase memory live here
+  worker.ts                     # message-handler glue; imports lib via /voltagent.mjs
+  lib.ts                        # entry for the prebuilt lib bundle
   worker-shims/
     bootstrap.ts                # sets globalThis.EdgeRuntime before core loads
     async-hooks.ts              # @opentelemetry/context-async-hooks → Noop
@@ -22,13 +23,20 @@ src/
     empty.ts                    # node:os / node:module / node:crypto / etc.
     path-browser.ts             # node:path → posix subset
     console-logger.ts           # @voltagent/internal Logger over console.*
-integration/                    # worker-load + worker-e2e (vitest, happy-dom, aliased)
-tests/build-smoke.spec.ts       # programmatic vite build (vitest, no aliases)
+public/
+  voltagent.mjs                 # populated by `pnpm build:lib`; gitignored
+scripts/
+  check-lib-built.mjs           # pre-flight check for `dev` and `build`
+  postbuild-lib.mjs             # copies lib output into dist/ + public/
+tests/
+  build-smoke.spec.ts           # programmatic vite build of the demo (no aliases)
+  lib-build.spec.ts             # programmatic vite build of the lib
+voltagent.d.ts                  # hand-written types shipped next to dist/voltagent.mjs
 index.html
-vite.config.ts                  # resolve.alias map
-vitest.config.ts                # unit + build-smoke (no aliases)
-vitest.integration.config.ts    # integration tests (aliases applied)
-.env.test                       # fake env values consumed during tests
+vite.config.ts                  # demo build (externalizes /voltagent.mjs)
+vite.lib.config.ts              # lib build (single-file ESM with aliases)
+vite.shared.ts                  # alias map + define block, shared by lib build
+vitest.config.ts                # unit + build smoke (no aliases)
 ```
 
 ## Why this is needed
@@ -41,28 +49,39 @@ Loading `@voltagent/core` in a stock Web Worker fails because:
 4. Runtime detection in `utils/runtime.ts` doesn't recognise Web Workers, so core picks the Node observability path.
 5. `@voltagent/supabase` defaults to a Pino logger, which isn't worker-safe.
 
-The shims replace those imports with worker-safe equivalents. The runtime hint (`globalThis.EdgeRuntime = "WebWorker"`) routes core's `isServerlessRuntime()` through its serverless observability variant. Pino is bypassed by passing a console logger to `SupabaseMemoryAdapter`.
+The shims replace those imports with worker-safe equivalents at **lib-build time**. The runtime hint (`globalThis.EdgeRuntime = "WebWorker"`) is set as the bundle's first side effect so it lands before `@voltagent/core` evaluates. Pino is bypassed by passing `consoleLogger` to `SupabaseMemoryAdapter`. None of this leaks into the demo's own Vite config — the demo just consumes the prebuilt bundle.
 
 ## Required runtime config
 
-In `worker.ts`, two things must happen:
-
-- Set `globalThis.EdgeRuntime = "WebWorker"` **before** `@voltagent/core` evaluates. Because ES module imports are hoisted, the assignment lives in a side-effect-only module (`worker-shims/bootstrap.ts`) imported **first**.
-- Construct the `Agent` with `workspaceToolkits: false`. Filesystem/sandbox toolkits cannot run in a worker.
+The demo's `worker.ts` is thin. All it does is import from the prebuilt lib and wire up `self.onmessage`:
 
 ```ts
-import "./worker-shims/bootstrap"; // sets globalThis.EdgeRuntime first
-import { Agent } from "@voltagent/core";
+import {
+  Agent,
+  Memory,
+  SupabaseMemoryAdapter,
+  consoleLogger,
+  createAnthropic,
+  createWorkflowChain,
+  z,
+} from "/voltagent.mjs";
 
 const agent = new Agent({
   name: "summarizer",
   model: anthropic("claude-haiku-4-5"),
   memory,
-  workspaceToolkits: false, // critical
+  workspaceToolkits: false, // critical: workspace toolkits need Node
 });
 ```
 
-## Bundler aliases (Vite)
+Two things still matter:
+
+- The `Agent` must be constructed with `workspaceToolkits: false`. Filesystem/sandbox toolkits cannot run in a worker.
+- `globalThis.EdgeRuntime = "WebWorker"` must be set before `@voltagent/core` evaluates. This is handled inside the lib bundle (`src/lib.ts` imports `worker-shims/bootstrap` first) — you don't need to do it from `worker.ts`.
+
+## Bundler aliases (in the lib build)
+
+The aliases that swap Node primitives for worker-safe shims live in `vite.shared.ts` and are consumed only by `vite.lib.config.ts`:
 
 ```ts
 resolve: {
@@ -82,6 +101,8 @@ resolve: {
 }
 ```
 
+The demo's `vite.config.ts` does **not** apply these aliases — it just externalizes `/voltagent.mjs` so Rollup leaves the import as-is and the browser fetches the prebuilt bundle at runtime.
+
 webpack: same idea via `resolve.alias` plus `resolve.fallback`. esbuild: an `onResolve` plugin matching the same specifiers.
 
 ## Run it
@@ -94,24 +115,21 @@ webpack: same idea via `resolve.alias` plus `resolve.fallback`. esbuild: an `onR
    VITE_ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-2. Install and start dev server:
+2. Install, build the lib, then start the dev server:
 
    ```bash
    pnpm install
+   pnpm build:lib   # required — produces public/voltagent.mjs (and dist/voltagent.mjs)
    pnpm dev
    ```
 
 3. Open the printed URL, type a prompt, click submit. The agent runs inside the worker and posts the summary back to the page.
 
+> `pnpm dev` and `pnpm build` both fail loudly with a clear message if `public/voltagent.mjs` is missing. Re-run `pnpm build:lib` whenever you change `src/lib.ts` or any worker-shim, or when you bump VoltAgent dependencies.
+
 ## Use as a library (single-file bundle)
 
-If you only want to drop VoltAgent into your own worker without copying the alias config and shim files, run:
-
-```bash
-pnpm build:lib
-```
-
-This produces two artifacts:
+`pnpm build:lib` is also the entry point for using VoltAgent in **your** worker, separately from this example. It produces:
 
 - `dist/voltagent.mjs` — single self-contained ESM bundle. Every dependency (`@voltagent/core`, `@voltagent/supabase`, `@ai-sdk/anthropic`, `zod`, the OTel pieces, etc.) is inlined. No bundler required on the consumer side.
 - `dist/voltagent.d.ts` — hand-written declarations covering the named exports.
@@ -173,28 +191,27 @@ Pin them to the same versions listed in this example's `package.json` to avoid s
 
 ### Build outputs
 
-| Command          | Output                                  | Purpose                                                                |
-| ---------------- | --------------------------------------- | ---------------------------------------------------------------------- |
-| `pnpm build`     | `dist/index.html` + `dist/assets/*.js`  | Demo app (this example).                                               |
-| `pnpm build:lib` | `dist/voltagent.mjs` + `dist/voltagent.d.ts` | Reusable library bundle for consumption from another project.       |
+| Command          | Output                                                            | Purpose                                                            |
+| ---------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `pnpm build:lib` | `dist/voltagent.mjs` + `dist/voltagent.d.ts` + `public/voltagent.mjs` | Reusable library bundle (also feeds the demo).                     |
+| `pnpm build`     | `dist/index.html` + `dist/assets/*.js`                            | Demo app that consumes `public/voltagent.mjs`.                     |
 
-Both write into `dist/`. `pnpm build` (Vite HTML build) clears `dist/` first; `pnpm build:lib` uses `emptyOutDir: false`. If you want both, run them in the order: `pnpm build` then `pnpm build:lib` so the lib artifacts land last.
+`pnpm build` clears `dist/` before running, so always invoke it **before** `pnpm build:lib` if you want both sets of artifacts in `dist/` at once. The demo only relies on `public/voltagent.mjs`, which is gitignored and recreated by `pnpm build:lib`.
 
 ## Verifying it actually runs in the worker
 
 - DevTools → **Sources** → top-level shows your worker chunk; breakpoints inside `worker.ts` only fire while the worker is executing.
-- DevTools → **Network**: requests to your Supabase URL and `api.anthropic.com` originate from the worker thread.
-- Build (`pnpm build`) must finish without `Module not found: node:*` errors.
+- DevTools → **Network**: the worker fetches `/voltagent.mjs` once, then makes requests to your Supabase URL and `api.anthropic.com` from the worker thread.
+- `pnpm build` must finish without `Module not found` errors.
 
 ## Running the tests
 
 ```bash
-pnpm test                # unit + build-smoke (~7 s)
-pnpm test:watch          # unit watch mode
-pnpm test:integration    # worker-load + worker-e2e (~3 s, requires built workspace deps)
+pnpm test         # unit + build-smoke + lib-build (~14 s)
+pnpm test:watch   # watch mode
 ```
 
-> **Important:** integration tests require the workspace packages to be built first:
+> The lib-build smoke test runs `vite build --config vite.lib.config.ts` programmatically, so it requires the workspace packages to be built first:
 >
 > ```bash
 > pnpm --filter @voltagent/internal --filter @voltagent/logger \
@@ -212,35 +229,21 @@ The shim suite (in `src/worker-shims/__tests__/`) covers each shim:
 - `console-logger.spec.ts` — every level routes to the right `console.*` method, `child()` merges bindings, no Pino dependency.
 - `empty.spec.ts` — throwing Proxy throws on real property access, and tolerates `then` / `__esModule` checks so module loaders don't false-trigger.
 - `bootstrap.spec.ts` — importing `bootstrap.ts` sets `globalThis.EdgeRuntime`, and uses `??=` so an existing value wins.
-- `vite-aliases.spec.ts` — every required Node specifier has an alias entry and every replacement file actually exists.
+- `vite-aliases.spec.ts` — every required Node specifier has an alias entry in `vite.shared.ts` and every replacement file actually exists.
 
-Tests run in Node via `vitest.config.ts` (which intentionally does **not** extend `vite.config.ts`, so the worker aliases don't replace `node:fs` etc. during testing).
+Tests run in Node via `vitest.config.ts`.
 
-### Build smoke (`tests/build-smoke.spec.ts`)
+### Build smokes
 
-Runs `vite.build()` programmatically against the example, writes to a temp directory, and verifies:
-
-- Build succeeds without errors.
-- A worker chunk is emitted in `assets/`.
-- The worker chunk contains the `@voltagent/core` runtime markers (`SupabaseMemoryAdapter`, `Memory`, `Agent`).
-- The worker chunk includes our `WorkerNoopContextManager` shim — proof the alias for `@opentelemetry/context-async-hooks` was applied.
-
-This catches the most common regression: a future `@voltagent/core` release adding a top-level `node:*` import that we forgot to alias.
-
-### Integration suite (aliases applied)
-
-Two specs in `integration/`, both running under happy-dom with `vitest.integration.config.ts` (which extends `vite.config.ts` so the worker aliases are active):
-
-- `worker-load.spec.ts` — dynamically imports `src/worker.ts`, verifies it evaluates without throwing and assigns `self.onmessage`. Proves the full module-load path works in a worker-like environment.
-- `worker-e2e.spec.ts` — same setup, mocks `globalThis.fetch` for both the Supabase REST endpoints and `api.anthropic.com`, posts a message into `self.onmessage`, and asserts the worker posts a structured reply back. We don't reproduce the Anthropic Messages-API wire format byte-for-byte (ai-sdk ships `MockLanguageModelV2` for that); the test verifies the **plumbing** — that the workflow runs, fetch is reached, and a `{ ok: true | false }` reply makes the round trip.
+- `tests/build-smoke.spec.ts` — runs the demo build (`vite build`) into a temp directory. Verifies the worker chunk is emitted, contains the message-handler glue, and externalizes `/voltagent.mjs` (the import survives, no VoltAgent code is re-bundled).
+- `tests/lib-build.spec.ts` — runs the lib build (`vite build --config vite.lib.config.ts`) into a temp directory. Verifies a single `voltagent.mjs` is emitted with all dependencies inlined (no `@voltagent/*`, `@ai-sdk/*`, `@supabase/*`, `node:*`, `ai`, `zod` bare imports survive), the runtime markers are present (`Agent`, `Memory`, `SupabaseMemoryAdapter`, `WorkerNoopContextManager`), every promised export is listed in the trailing `export {}` block, and the hand-written `voltagent.d.ts` ships with the right exports listed.
 
 Confidence the example actually works in a worker:
 
 | Concern                                                  | Evidence                                       |
 | -------------------------------------------------------- | ---------------------------------------------- |
-| Bundler resolves every Node import                       | `tests/build-smoke.spec.ts`                    |
-| Worker module evaluates without throwing                 | `integration/worker-load.spec.ts`              |
-| Full pipeline (postMessage → workflow.run → postMessage) | `integration/worker-e2e.spec.ts`               |
+| Lib build bundles every Node import correctly            | `tests/lib-build.spec.ts`                      |
+| Demo build leaves `/voltagent.mjs` external              | `tests/build-smoke.spec.ts`                    |
 | Each shim is correct in isolation                        | 84 unit tests in `src/worker-shims/__tests__/` |
 
 ## Caveats
@@ -251,9 +254,12 @@ Confidence the example actually works in a worker:
 - **No workspace toolkits in the worker.** Filesystem, sandbox, search, and skills toolkits all require Node. Calling them inside the worker throws a clear "Node-only module not available in Web Worker" error from `worker-shims/empty.ts`.
 - **`isDeepStrictEqual` polyfill** in `node-util.ts` covers JSON-shaped data (primitives, arrays, plain objects, Dates, typed arrays) — sufficient for tool-call argument comparison. It does not cover `Map` / `Set` / cycles.
 - **Version drift.** If a future `@voltagent/core` release adds new top-level `node:*` imports, the alias list may need extending. The shimmed `empty.ts` throws a descriptive error, making this self-diagnosing.
+- **Build order.** `pnpm dev` and `pnpm build` consume `public/voltagent.mjs` and fail with a clear message if it's missing. Re-run `pnpm build:lib` after changing the lib entry, the worker shims, or VoltAgent dependencies.
 
 ## Key files to read first
 
-- `vite.config.ts` — alias wiring
-- `src/worker.ts` — the runtime contract: `EdgeRuntime` hint + `workspaceToolkits: false` + console logger for Supabase
+- `src/lib.ts` — what gets bundled into `voltagent.mjs`
+- `vite.lib.config.ts` — single-file lib build config (uses the shared aliases)
+- `src/worker.ts` — the demo's thin worker glue
+- `vite.config.ts` — externalizes `/voltagent.mjs`; otherwise unremarkable
 - `src/worker-shims/async-hooks.ts` — how the OTel context manager is replaced with a Noop

@@ -3,20 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-import viteConfig from "../../../vite.config";
+import { workerAliases } from "../../../vite.shared";
 
 type AliasEntry = { find: string | RegExp; replacement: string };
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-const aliases = (() => {
-  const resolved =
-    typeof viteConfig === "function"
-      ? viteConfig({ command: "build", mode: "production" })
-      : viteConfig;
-  const cfg = resolved as unknown as { resolve?: { alias?: AliasEntry[] } };
-  return cfg.resolve?.alias ?? [];
-})();
+const aliases: AliasEntry[] = workerAliases;
 
 const required = [
   "@opentelemetry/context-async-hooks",
@@ -32,7 +25,7 @@ const required = [
   "node:path",
 ];
 
-describe("vite.config.ts resolve.alias", () => {
+describe("vite.shared.ts workerAliases", () => {
   test("contains every required Node-only specifier", () => {
     for (const spec of required) {
       const matched = aliases.some((entry) =>

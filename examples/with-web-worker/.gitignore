@@ -1,6 +1,8 @@
 node_modules
 dist
 .dist-build-smoke
+.dist-lib-smoke
+public/voltagent.mjs
 .env
 .env.local
 *.log

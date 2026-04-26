@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -6,9 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-describe("vite build", () => {
-  // Use a fixed sibling dir instead of os.tmpdir() — `node:os` is aliased to
-  // a throwing stub in this project's vite.config, even at test time.
+describe("vite build (demo)", () => {
   const tempOut = join(projectRoot, ".dist-build-smoke");
 
   beforeAll(() => {
@@ -19,7 +17,7 @@ describe("vite build", () => {
     rmSync(tempOut, { recursive: true, force: true });
   });
 
-  test("succeeds and emits a worker chunk that includes @voltagent/core", async () => {
+  test("emits a thin worker chunk that imports /voltagent.mjs at runtime", async () => {
     await build({
       configFile: resolve(projectRoot, "vite.config.ts"),
       root: projectRoot,
@@ -42,10 +40,27 @@ describe("vite build", () => {
     const indexHtml = join(tempOut, "index.html");
     expect(existsSync(indexHtml)).toBe(true);
 
-    const workerCode = readFileSync(join(assetsDir, worker as string), "utf8");
-    // Worker bundle must contain the agent runtime + the workspace shim
-    // marker (a ContextManager method our async-hooks shim provides).
-    expect(workerCode).toMatch(/SupabaseMemoryAdapter|MemoryAdapter|class\s+Memory\b|Agent\b/);
-    expect(workerCode).toMatch(/WorkerNoopContextManager|active\(\)/);
+    const workerPath = join(assetsDir, worker as string);
+    const workerCode = readFileSync(workerPath, "utf8");
+
+    // The lib import must survive as an external runtime import — Vite must
+    // not pull VoltAgent into the worker chunk.
+    expect(workerCode).toMatch(/from\s*["']\/voltagent\.mjs["']/);
+
+    // Negative: VoltAgent symbols belong in voltagent.mjs, not in the demo
+    // worker chunk. If any of these match, the externalization broke and the
+    // demo is double-bundling.
+    expect(workerCode).not.toMatch(/WorkerNoopContextManager/);
+    expect(workerCode).not.toMatch(/SupabaseMemoryAdapter\s*=\s*class/);
+    expect(workerCode).not.toMatch(/createWorkflowChain\s*=/);
+
+    // Positive: the demo's own glue is present.
+    expect(workerCode).toMatch(/onmessage/);
+    expect(workerCode).toMatch(/postMessage/);
+
+    // Sanity: a thin glue chunk should be well under 200 KB unminified. The
+    // pre-lib-bundle worker was ~2 MB.
+    const workerSize = statSync(workerPath).size;
+    expect(workerSize).toBeLessThan(200_000);
   }, 180_000);
 });
