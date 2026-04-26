@@ -14,6 +14,6 @@
     "allowImportingTsExtensions": false,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src", "vite.config.ts", "vite.shared.ts", "vite.lib.config.ts"],
+  "exclude": ["node_modules", "dist", "voltagent.d.ts"]
 }

@@ -103,6 +103,83 @@ webpack: same idea via `resolve.alias` plus `resolve.fallback`. esbuild: an `onR
 
 3. Open the printed URL, type a prompt, click submit. The agent runs inside the worker and posts the summary back to the page.
 
+## Use as a library (single-file bundle)
+
+If you only want to drop VoltAgent into your own worker without copying the alias config and shim files, run:
+
+```bash
+pnpm build:lib
+```
+
+This produces two artifacts:
+
+- `dist/voltagent.mjs` — single self-contained ESM bundle. Every dependency (`@voltagent/core`, `@voltagent/supabase`, `@ai-sdk/anthropic`, `zod`, the OTel pieces, etc.) is inlined. No bundler required on the consumer side.
+- `dist/voltagent.d.ts` — hand-written declarations covering the named exports.
+
+Then in your own worker file:
+
+```ts
+// my-worker.ts (your project, not this example)
+import {
+  Agent,
+  Memory,
+  createWorkflowChain,
+  SupabaseMemoryAdapter,
+  createAnthropic,
+  z,
+  consoleLogger,
+} from "./voltagent.mjs";
+
+const anthropic = createAnthropic({
+  apiKey: "sk-ant-...",
+  headers: { "anthropic-dangerous-direct-browser-access": "true" },
+});
+
+const memory = new Memory({
+  storage: new SupabaseMemoryAdapter({
+    supabaseUrl: "https://...",
+    supabaseKey: "...",
+    logger: consoleLogger.child({ component: "supabase-memory" }),
+  }),
+});
+
+const agent = new Agent({
+  name: "summarizer",
+  instructions: "...",
+  model: anthropic("claude-haiku-4-5"),
+  memory,
+  workspaceToolkits: false, // still required — workspace toolkits need Node
+});
+
+self.onmessage = async (event) => {
+  // your own message protocol — the lib bundle does not impose one
+};
+```
+
+`bootstrap.ts` runs automatically as a side-effect of the first import, so `globalThis.EdgeRuntime` is set before `@voltagent/core` evaluates. `consoleLogger` is exported as a convenience so you don't have to wire your own logger just to satisfy `SupabaseMemoryAdapter`'s `logger` option.
+
+### TypeScript types
+
+`voltagent.d.ts` re-exports types from the upstream packages. The runtime is bundled, but **types** still resolve through normal module resolution, so type-aware consumers should add the following to their `devDependencies` (no runtime install needed — these are bundled into the `.mjs`):
+
+```
+@voltagent/core
+@voltagent/supabase
+@ai-sdk/anthropic
+zod
+```
+
+Pin them to the same versions listed in this example's `package.json` to avoid signature drift between the bundled runtime and the typed surface. JS-only consumers can ignore `voltagent.d.ts` entirely.
+
+### Build outputs
+
+| Command          | Output                                  | Purpose                                                                |
+| ---------------- | --------------------------------------- | ---------------------------------------------------------------------- |
+| `pnpm build`     | `dist/index.html` + `dist/assets/*.js`  | Demo app (this example).                                               |
+| `pnpm build:lib` | `dist/voltagent.mjs` + `dist/voltagent.d.ts` | Reusable library bundle for consumption from another project.       |
+
+Both write into `dist/`. `pnpm build` (Vite HTML build) clears `dist/` first; `pnpm build:lib` uses `emptyOutDir: false`. If you want both, run them in the order: `pnpm build` then `pnpm build:lib` so the lib artifacts land last.
+
 ## Verifying it actually runs in the worker
 
 - DevTools → **Sources** → top-level shows your worker chunk; breakpoints inside `worker.ts` only fire while the worker is executing.
